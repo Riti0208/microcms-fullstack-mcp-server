@@ -177,8 +177,20 @@ class MicroCMSClient {
   ): Promise<any> {
     const url = `${this.baseUrl}/api/v1/${endpoint}/${contentId}`;
 
+    // リッチエディタフィールドのHTMLを確認して警告を表示
+    const processedData = { ...data };
+    for (const key in processedData) {
+      if (typeof processedData[key] === 'string' && processedData[key].includes('<')) {
+        console.error(`Note: Field '${key}' contains HTML-like content. Ensure it's properly formatted for microCMS.`);
+      }
+    }
+
     console.error(`PATCH Request URL: ${url}`);
-    console.error(`PATCH Data:`, JSON.stringify(data, null, 2));
+    console.error(`PATCH Data:`, JSON.stringify(processedData, null, 2));
+    console.error(`PATCH Headers:`, {
+      "X-MICROCMS-API-KEY": `${this.apiKey.substring(0, 5)}...`,
+      "Content-Type": "application/json",
+    });
 
     const response = await fetch(url, {
       method: "PATCH",
@@ -186,19 +198,33 @@ class MicroCMSClient {
         "X-MICROCMS-API-KEY": this.apiKey,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(data),
+      body: JSON.stringify(processedData),
     });
+
+    console.error(`PATCH Response Status: ${response.status} ${response.statusText}`);
+    console.error(`PATCH Response Headers:`, Object.fromEntries(response.headers.entries()));
 
     if (!response.ok) {
       const errorText = await response.text();
       console.error(`PATCH Error: ${response.status} ${response.statusText}`);
       console.error(`Error Response: ${errorText}`);
+      
+      // Parse error details if available
+      try {
+        const errorJson = JSON.parse(errorText);
+        console.error(`Error Details:`, JSON.stringify(errorJson, null, 2));
+      } catch (e) {
+        // Error response is not JSON
+      }
+      
       throw new Error(
         `Failed to patch content: ${response.status} ${response.statusText} - ${errorText}`
       );
     }
 
-    return response.json();
+    const result = await response.json();
+    console.error(`PATCH Success Response:`, JSON.stringify(result, null, 2));
+    return result;
   }
 
   /**
@@ -471,10 +497,31 @@ server.tool(
       .string()
       .describe("更新先のmicroCMSのAPIエンドポイント (例: 'blog')"),
     contentId: z.string().describe("更新するコンテンツのID"),
-    data: z.record(z.any()).describe("部分更新するデータ（JSON形式）"),
+    data: z.record(z.any()).describe("部分更新するデータ（JSON形式）。リッチエディタフィールドには生のHTMLを指定可能"),
   },
   async (params: any) => {
     try {
+      // Validate that data is an object
+      if (!params.data || typeof params.data !== 'object') {
+        throw new Error('データはオブジェクト形式で指定してください');
+      }
+      
+      // Log the parameters for debugging
+      console.error(`PATCH Tool Parameters:`, {
+        endpoint: params.endpoint,
+        contentId: params.contentId,
+        data: params.data
+      });
+      
+      // HTMLフィールドの注意喚起
+      for (const key in params.data) {
+        if (typeof params.data[key] === 'string' && params.data[key].includes('<')) {
+          console.error(`⚠️ Field '${key}' contains HTML content. microCMS rich editor fields accept HTML strings.`);
+          console.error(`  Supported tags: h1-h5, p, strong, em, u, s, code, ul, ol, li, table, a, img`);
+          console.error(`  Ensure proper formatting without line breaks in the request.`);
+        }
+      }
+      
       const result = await microCMS.patchContent(
         params.endpoint,
         params.contentId,
@@ -486,7 +533,7 @@ server.tool(
             type: "text",
             text: `✅ コンテンツを部分更新しました (ID: ${
               params.contentId
-            }):\n${JSON.stringify(result, null, 2)}`,
+            }):\n${JSON.stringify(result, null, 2)}\n\n⚠️ 注意: リッチエディタフィールドのHTMLが正しく更新されない場合は、HTMLタグが適切にフォーマットされているか確認してください。`,
           },
         ],
       };
@@ -497,7 +544,7 @@ server.tool(
             type: "text",
             text: `❌ 部分更新エラー: ${
               error instanceof Error ? error.message : String(error)
-            }`,
+            }\n\n💡 ヒント: リッチエディタフィールドを更新する場合は、生のHTMLを使用してください。例: "<p>テキスト</p>"`,
           },
         ],
         isError: true,
